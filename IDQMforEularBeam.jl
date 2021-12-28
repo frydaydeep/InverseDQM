@@ -1,34 +1,67 @@
+
+
+using Pkg
+Pkg.add("LinearAlgebra")
+Pkg.add("CairoMakie")
+using CairoMakie
+using LinearAlgebra
+
 struct Beam1{T}
     p0::T #kN/m #
     L::T  #m
     EI::T #kNm2
 end
-include("PkgInvDQM.jl")
-using CairoMakie
+
+# Mesh scheme
+function glcPointsGlobal(left::Number,right::Number,N::Int)
+    glcPointsLocal= [0.5(1-cos((i-1)pi/(N-1))) for i in 1:N]
+    (right-left).*glcPointsLocal.+left
+end
+# Calculate the DQ matrix
+function CofDQM(x::Vector,order::Int)
+    #x: vector of sampling points;
+    #order: largest derivative order;
+    #return: matrix with dimension of (x,x,m)
+
+    n = length(x)
+    C = fill(0.0,(n,n,order))
+    (n>order) || error("need more sampling points")
+
+    # 1st order
+    
+    for i in 1:n, j in 1:n
+        if i != j
+            C[i,j,1] = prod([((m!=i && m!=j) ? x[i]-x[m] : 1) for  m in 1:n])/prod([((m!=j) ? x[j]-x[m] : 1) for  m in 1:n])
+
+            # m_range_denominater = filter!(xx->xx!=i,[m for m in 1:n])
+            # m_range_numerator = filter!(xx->xx!=j,m_range_denominater)
+            #C[i,j,1] = numstring(filter(xx->xx!=0,[x[i]-x[m] for m in m_range_numerator]))/numstring(filter(xx->xx!=0,[x[j]-x[m] for m in m_range_denominater]))
+            # C[i,j,1] = pop!(cumprod(filter(xx->xx!=0,[x[i]-x[m] for m in m_range_numerator])))/pop!(cumprod(filter(xx->xx!=0,[x[j]-x[m] for m in 1:n])))
+        else
+
+            # C[i,i,1] = sum(filter(xx->xx!=Inf,[1/(x[i]-x[m]) for m in 1:n]))
+            C[i,i,1] = sum([((m!=i) ? 1/(x[i]-x[m]) : 0) for m in 1:n]) #这个慢了4个微秒
+
+        
+        end
+    end
 
 
+    # higher order
+    for i in 1:n, j in 1:n, k in 2:order
+        if i != j
+            C[i,j,k] = k*(C[i,i,k-1]*C[i,j,1] - C[i,j,k-1]/(x[i]-x[j]))
+        end
+    end
+    for i in 1:n, j in 1:n, k in 2:order
+        if i == j
+            C[i,j,k] = -sum([((m!=i) ? C[i,m,k] : 0) for m in 1:n])
+        end
+    end
+    C
+end
 
-inputBeam = Beam1{Float64}(2,1,20)
-
-
-
-
-
-
-
-N=60;
-
-
-
-xGlobal = glcPointsGlobal(0.,inputBeam.L,N)
-
-xInner = map(x->x-inputBeam.L/2.,xGlobal)
-
-DQm2 = CofDQM(xGlobal,2)[:,:,2]
-DQm1 = CofDQM(xGlobal,2)[:,:,1]
-iDQm1 = inv(DQm1)
-iDQm2 = inv(DQm2)
-
+#Plot figures, Played with mutipleDispatch
 function Plot4(xGlobal,w,w_corrected,wReal)
     fig1 = Figure(backgroundcolor = RGBf(98, 98, 98),
     resolution = (1000, 300))
@@ -98,6 +131,23 @@ function Plot4(xGlobal,w_corrected,wReal)
     fig1
 end
 
+# beam info
+inputBeam = Beam1{Float64}(2,1,20)
+
+#sampling points
+N=60;
+
+
+# A and Λ
+xGlobal = glcPointsGlobal(0.,inputBeam.L,N)
+xInner = map(x->x-inputBeam.L/2.,xGlobal) # 
+DQm2 = CofDQM(xGlobal,2)[:,:,2] #A^2
+DQm1 = CofDQM(xGlobal,2)[:,:,1] #A
+iDQm1 = inv(DQm1)   # Λ
+iDQm2 = inv(DQm2)   # Λ^2 
+
+
+
 fig1 = Figure(backgroundcolor = RGBf(98, 98, 98),
     resolution = (2400, 700))
 
@@ -155,12 +205,9 @@ if 1 == 1
     yGlobal = ∂2w.(xGlobal)
     InvInt0 = iDQm1*yGlobal # ϕ 
     InvInt1 = InvInt0 .+ (0-InvInt0[1]) # ϕ with B.C.
-    InvInt00 = iDQm1*InvInt1
-    InvInt11 = InvInt00 .+ (0-InvInt00[1])
-    # InvInt11 = InvInt00 .+ [(0-InvInt00[end])+(0-InvInt00[1])]/2
+    InvInt00 = iDQm1*InvInt1 # w_notail
+    InvInt11 = InvInt00 .+ (0-InvInt00[1]) # w
     InvInt11 = -InvInt11
-    # yInv = -(iDQm2*yGlobal.+0.5(0-(iDQm2*yGlobal)[1]+0-(iDQm2*yGlobal)[end])+((0-(iDQm2*yGlobal)[end])-(0-(iDQm2*yGlobal)[1])).*yGlobal+DQm1*(0.5(0-(iDQm2*yGlobal)[1]+0-(iDQm2*yGlobal)[end])*ones(N)))
-    # yInv = -(iDQm2*yGlobal.+0.5(0-(iDQm2*yGlobal)[1]+0-(iDQm2*yGlobal)[end])+((0-(iDQm2*yGlobal)[end])-(0-(iDQm2*yGlobal)[1])).*yGlobal)
     yInv = -(iDQm2*yGlobal .+ (0-(iDQm2*yGlobal)[1]) + ((0-(iDQm2*yGlobal)[end])-(0-(iDQm2*yGlobal)[1]))/inputBeam.L.*xGlobal)
     FixHinge = [wReal.(xGlobal) InvInt11]
     # Plot4(xGlobal, InvInt11,wReal)
@@ -175,8 +222,8 @@ end
 
 
 
-fig1
-fig2
+fig1  # Figure 1 in pdf
+# fig2  # Figure 2 in pdf
 
-# Plot4(xGlobal,yGlobal,InvInt1)
+
 
